@@ -3,7 +3,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.colors import LogNorm
 from detect_peaks import detect_peaks
-# Hello
+
 
 def get_fitsimage(image_file, show_info=False):
 
