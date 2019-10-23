@@ -4,6 +4,8 @@ import matplotlib.pyplot as plt
 import os
 import aperture_photometry_functions as apf
 """
+Author: Jeppe Sinkbæk Thomsen, https://github.com/jsinkbaek/Aperture-Photometry
+
 This is a runnable script used for aperture photometry. It consists of two primary parts:
 1. Loading and aperture measurement. This part is used to either load previously measured aperture photometry
    data or, if none are available, make aperture measurements on a set of images in order to make and save this data.
@@ -16,6 +18,21 @@ This is a runnable script used for aperture photometry. It consists of two prima
    
 Most of this script's functionality is found in the function repository "aperture_photometry_functions.py", which is 
 referenced throughout the script as apf.
+
+Dependencies:
+
+    - offsets.txt (must be present in root folder and include an x,y offset for every image to be analyzed 
+      (when comparing with a reference image)
+      
+    - o4201193.10.fts (must be present in root folder. Reference image. Can be replaced with another, if name is 
+      changed in the script to account for this)
+      
+    - detect_peaks.py (file with a function used. 
+      Author of this file is Marcos Duarte,https://github.com/demotu/BMC)
+      
+    - The folder cepheid_data including the following files: - filenames.txt (a file with a list of filenames for all 
+      the image fits files to be analyzed) - Image files to be analyzed
+
 """
 
 # # Loading and aperture measurement
