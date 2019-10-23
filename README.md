@@ -1,4 +1,4 @@
-# # Aperture-Photometry
+# Aperture-Photometry
 Code and image data used for aperture photometry by the author. Specialized for a specific data set, which is included, but
 be compatible with others with small modifications.
 
