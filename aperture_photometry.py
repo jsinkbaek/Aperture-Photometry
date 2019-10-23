@@ -3,7 +3,7 @@ import matplotlib.pyplot as plt
 import os
 import aperture_photometry_functions as apf
 """
-Author: Jeppe Sinkbæk Thomsen, https://github.com/jsinkbaek/Aperture-Photometry
+Author: Jeppe Sinkbaek Thomsen, https://github.com/jsinkbaek/Aperture-Photometry
 
 This is a runnable script used for aperture photometry. It consists of two primary parts:
 1. Loading and aperture measurement. This part is used to either load previously measured aperture photometry
@@ -29,8 +29,9 @@ Dependencies:
     - detect_peaks.py (file with a function used. 
       Author of this file is Marcos Duarte,https://github.com/demotu/BMC)
       
-    - The folder cepheid_data including the following files: - filenames.txt (a file with a list of filenames for all 
-      the image fits files to be analyzed) - Image files to be analyzed
+    - The folder cepheid_data including the following files: 
+            - filenames.txt (a file with a list of filenames for all the image fits files to be analyzed) 
+            - Image files to be analyzed
 
 """
 
