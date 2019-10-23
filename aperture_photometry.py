@@ -52,7 +52,7 @@ if data_exists is False:
     img_file_name = 'o4201193.10.fts'
     img_data, img_rgain, img_rnoise, img_hjd = apf.get_fitsimage(img_file_name, show_info=False)
 
-    object_coordinates = apf.xyloader(img_data, inpt='y')
+    object_coordinates = apf.xyloader(img_data)
 
     # Define aperture size steps to be evaluated in flux convergence test
     aperture_pxrange = [3, 20]
@@ -92,6 +92,9 @@ if data_exists is False:
     print(calibration_check)
     plt.plot(time, ceph_flux)
     plt.plot(time, calibration_check)
+    plt.ylabel('ADU ratio for objects')
+    plt.xlabel('Time in days after '+str(helJD[0])+'HJD')
+    plt.legend(['V1/S1', 'S1/S2'])
     plt.show()
 
     # Examine and delete images with potentially bad quality
@@ -170,7 +173,7 @@ if data_exists is False:
 
 # # Cepheid data analysis
 
-pguess = apf.periodlinreg(ceph_flux, time)
+pguess = apf.periodlinreg(ceph_flux, calibration_check, time)
 
 # # Phaseplot used to find period
 apf.phaseplot(ceph_flux, time, pguess=pguess)

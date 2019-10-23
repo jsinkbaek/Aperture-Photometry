@@ -184,6 +184,9 @@ def flux_convergence_test(coordinates, image_data, aperture_steps, rgain, rnoise
     ratio, and plots it. Has functionality for multiple different uses. Can be used with coordinate measurements for
     a different image, as long as the coordinate offsets for this image is known in comparison to it.
     """
+    # Update plot font size for larger text
+    plt.rcParams.update({'font.size': 25})
+
     # Set background index location
     bg_placement = len(coordinates)-1
 
@@ -221,11 +224,12 @@ def flux_convergence_test(coordinates, image_data, aperture_steps, rgain, rnoise
     if show_plot is True:
         plt.figure()
         for k in range(0, len(coordinates) - 1):
-            plt.plot(aperture_steps, 2.5 * np.log10(flux[k, :] - flux[bg_placement, :]), '.')
+            plt.plot(aperture_steps, 2.5 * np.log10(flux[k, :] - flux[bg_placement, :]), '.', markersize=10)
             legendtable1.append('Object ' + str(k) + ' - Background')
-        plt.plot(aperture_steps, 2.5 * np.log10(flux[bg_placement, :]), '.')
+        plt.plot(aperture_steps, 2.5 * np.log10(flux[bg_placement, :]), '.', markersize=10)
         for k in range(0, len(coordinates) - 1):
-            plt.plot(peaks_px[k], 2.5 * np.log10(flux[k, peaks_indx[k]] - flux[bg_placement, peaks_indx[k]]), '*')
+            plt.plot(peaks_px[k], 2.5 * np.log10(flux[k, peaks_indx[k]] - flux[bg_placement, peaks_indx[k]]), '*',
+                     markersize=15)
         legendtable1.append('Background')
         plt.xlabel('Aperture pixel size')
         plt.ylabel('Aperture count magnitude (log10(ADU))')
@@ -234,13 +238,13 @@ def flux_convergence_test(coordinates, image_data, aperture_steps, rgain, rnoise
 
         plt.figure()
         for k in range(0, len(coordinates)):
-            plt.plot(aperture_steps, sn_ratio[k, :], '.')
+            plt.plot(aperture_steps, sn_ratio[k, :], '.', markersize=10)
             legendtable2.append('Object ' + str(k))
         for k in range(0, len(coordinates) - 1):
-            plt.plot(peaks_px[k], sn_ratio[k, peaks_indx[k]], '*')
+            plt.plot(peaks_px[k], sn_ratio[k, peaks_indx[k]], '*', markersize=15)
         plt.xlabel('Aperture pixel size (radius)')
         plt.ylabel('S/N ratio (ADU/e)')
-        plt.legend(legendtable2)
+        plt.legend(legendtable2, loc='lower right')
         plt.show(block=True)
 
     print(max_pxsize)
@@ -333,7 +337,7 @@ def phaseplot(mag, time, pguess=1, repeat=True):
         fig.canvas.flush_events()
         fig.legend(['Period '+'%.3f'% period + ' days'])
         ax.set_xlabel('Phase: (time modulus period) / period')
-        ax.set_ylabel('Cepheid Magnitude')
+        ax.set_ylabel('Cepheid relative luminosity (V1/S1)')
         inpt = input()
         if inpt == 'q':
             loop = False
@@ -351,7 +355,7 @@ def phaseplot(mag, time, pguess=1, repeat=True):
             loop = False
 
 
-def periodlinreg(mag, time):
+def periodlinreg(mag, calcheck, time):
     """
     Finds maxima and minima of luminosity curve, plots them (for check) and gets two linear regression estimates of
     the cepheid period (one for peaks and one for valleys). Returns a mean of these two values
@@ -389,8 +393,15 @@ def periodlinreg(mag, time):
     t_valleys = np.asarray(time[ind_valleys])
 
     # Plot peak and valley data
-    ax.plot(t_peaks, x_peaks, 'b*')
-    ax.plot(t_valleys, x_valleys, 'r*')
+    ax.plot(t_peaks, x_peaks, 'bs', markersize=12)
+    ax.plot(t_valleys, x_valleys, 'rp', markersize=12)
+
+    # Plot calibration check
+    ax.plot(time, calcheck, '--')
+
+    # Legend
+    ax.legend(['V1/S1', 'Peak data', 'Valley data', 'S1/S2'], loc='upper right')
+
     plt.show(block=False)
 
     # # Plot linear fit to period from peaks and valleys
@@ -415,9 +426,9 @@ def periodlinreg(mag, time):
     ax.xaxis.set_minor_locator(MultipleLocator(1))
 
     # Plot peak and valley data, as well as corresponding fits
-    ax.plot(num_peaks, t_peaks, 'b*')
+    ax.plot(num_peaks, t_peaks, 'bs', markersize=12)
     ax.plot(num_peaks, fit_peaks_fn(num_peaks), '--k')
-    ax.plot(num_valleys, t_valleys, 'r*')
+    ax.plot(num_valleys, t_valleys, 'rp', markersize=12)
     ax.plot(num_valleys, fit_valleys_fn(num_valleys), '-.k')
     ax.set_xlabel('Extremum #')
     ax.set_ylabel('Time in days')
