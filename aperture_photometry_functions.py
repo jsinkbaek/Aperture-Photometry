@@ -3,6 +3,28 @@ import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.colors import LogNorm
 from detect_peaks import detect_peaks
+import scipy.ndimage as ndimage
+
+
+def get_max(img, sigma, alpha=20, size=10):
+    i_out = []
+    j_out = []
+    image_temp = np.copy(img)
+    while True:
+        k = np.argmax(image_temp)
+        j, i = np.unravel_index(k, image_temp.shape)
+        if image_temp[j, i] >= alpha*sigma:
+            i_out.append(i)
+            j_out.append(i)
+            x = np.arange(i-size, i+size)
+            y = np.arange(j-size, j+size)
+            xv, yv = np.meshgrid(x, y)
+            image_temp[yv.clip(0, image_temp.shape[0]-1), xv.clip(0, image_temp.shape[1]-1)] = 0
+
+            print(xv)
+        else:
+            break
+    return i_out, j_out
 
 
 def get_fitsimage(image_file, show_info=False):
@@ -31,14 +53,289 @@ def get_fitsimage(image_file, show_info=False):
     return image_data, image_rgain, image_rnoise, image_hjd
 
 
-def image_plot(image_data, ginput=False, show_info=False, block=True):
+def get_oroimage(fits_file, show_info=True):
+
+    # Open fits file and show info
+    hdu_list = fits.open(fits_file)
+    hdr = hdu_list[0].header
+    if show_info is True:
+        hdu_list.info()
+        print(repr(hdr))
+
+    result = {}
+
+    # Get image data from file
+    result['img_data'] = hdu_list[0].data
+    if 'OBJECT' in hdr.keys():
+        result['img_object'] = hdr['OBJECT']
+        result['img_filter'] = hdr['FILTER']
+        result['ra'] = hdr['RA']
+        result['dec'] = hdr['DEC']
+    elif hdr['IMAGETYP'] == 'Flat Field':
+        result['img_object'] = None
+        result['img_filter'] = hdr['FILTER']
+        result['ra'] = None
+        result['dec'] = None
+    else:
+        result['img_object'] = None
+        result['img_filter'] = None
+        result['ra'] = None
+        result['dec'] = None
+    result['time_utc'] = hdr['TIME']
+    result['exp_time'] = hdr['EXPTIME']
+    result['img_type'] = hdr['IMAGETYP']
+
+    # Close fits file
+    hdu_list.close()
+
+    return result
+
+
+def bias_correction(img_frames, biasframes):
+    # Create master bias (assume biasframes is 3dim array with each image in the first 2 dimensions)
+    master_bias = np.sum(biasframes, axis=2)/len(biasframes[0, 0, :])
+
+    # Retract master bias from images
+    for i in range(0, len(img_frames[0, 0, :])):
+        img_frames[:, :, i] = img_frames[:, :, i] - master_bias
+
+    return img_frames
+
+
+def dark_correction(img_frames, darkframes, biasframes=None):
+    # Remove bias from darks, if applicable
+    if biasframes is not None:
+        darkframes = bias_correction(darkframes, biasframes)
+
+    # Create master dark from darkframes (assume darkframes is 3dim array with each image in the first 2 dimensions)
+    master_dark = np.sum(darkframes, axis=2)/len(darkframes[0, 0, :])
+
+    # Retract master dark from images
+    for i in range(0, len(img_frames[0, 0, :])):
+        img_frames[:, :, i] = img_frames[:, :, i] - master_dark
+
+    return img_frames
+
+
+def flat_correction(img_frames, flatframes, darkframes, flat_expt, dark_expt, biasframes=None):
+    # Remove bias from flats, if applicable
+    if biasframes is not None:
+        flatframes = bias_correction(flatframes, biasframes)
+
+    # Remove darks from flats (while correcting for different exposure times)
+    for k in range(0, len(flatframes[0, 0, :])):
+        current_dark = np.copy(darkframes)
+        for i in range(0, len(darkframes[0, 0, :])):
+            current_dark[:, :, i] = current_dark[:, :, i] * flat_expt[k] / dark_expt[i]
+        flatframes[:, :, k] = dark_correction(flatframes[:, :, k][:, :, np.newaxis], current_dark,
+                                              biasframes=biasframes)[:, :, 0]
+
+    # Create master flat from flatframes (assume flatframes is 3dim array with each image in the first 2 dimensions)
+    master_flat = np.sum(flatframes, axis=2)/len(flatframes[0, 0, :])
+    master_flat = master_flat/np.mean(master_flat)
+
+    # Divide imgs with master_flat
+    for i in range(0, len(img_frames[0, 0, :])):
+        img_frames[:, :, i] = img_frames[:, :, i] / master_flat
+
+    return img_frames
+
+
+def filter_pipe(imgs, darks, flats, bias=None, filters=('Bessell V', 'Bessell B', 'Bessell R')):
+    # Expects all the image objects to be dictionaries with at least 'img_data' and 'img_filter' keys
+    img_filtered = {}
+    if bias is not None:
+        bias_imgdat = bias['img_data']
+    else:
+        bias_imgdat = None
+
+    dark_expt = darks['exp_time']
+    for f in filters:
+        # Find indices with current filter
+        imgs_indx = [i for i in range(len(imgs['img_filter'])) if imgs['img_filter'][i] == f]
+        flats_indx = [i for i in range(len(flats['img_filter'])) if flats['img_filter'][i] == f]
+        if bias is not None:
+            bias_indx = [i for i in range(len(bias['img_filter'])) if bias['img_filter'][i] == f]
+        else:
+            bias_indx = None
+
+        # Select frames
+        current_imgs = imgs['img_data'][:, :, imgs_indx]
+        current_flats = flats['img_data'][:, :, flats_indx]
+        print(flats['exp_time'])
+        print(flats['img_filter'])
+        print(flats_indx)
+        flats['exp_time'] = np.asarray(flats['exp_time'])
+        flat_expt = flats['exp_time'][flats_indx]
+
+        # Perform corrections using current darks, flats and bias
+        if bias is not None:
+            current_imgs = bias_correction(current_imgs, biasframes=bias_imgdat)
+        current_imgs = dark_correction(current_imgs, darks['img_data'], biasframes=bias_imgdat)
+        current_imgs = flat_correction(current_imgs, current_flats, darks['img_data'], flat_expt, dark_expt,
+                                       biasframes=bias_imgdat)
+
+        img_filtered[f] = current_imgs
+    return img_filtered
+
+
+def matchmaker(img_frames, catalogue_frame, stddev=1):
+    from astropy.convolution import Gaussian2DKernel
+    from astropy.convolution import convolve
+    # Number of images
+    n = len(img_frames[0, 0, :])
+
+    # Create kernel for smoothing
+    kernel = Gaussian2DKernel(x_stddev=stddev)
+
+    # Initialize arrays for smoothed images and local maxima coordinates (j, i) = (y, x)
+    img_smooth = np.empty(img_frames.shape)
+    imax_smooth = [np.empty(1) for k in range(0, n)]
+    jmax_smooth = [np.empty(1) for k in range(0, n)]
+
+    # Smooth catalogue/reference image and find local maxima
+    cat_smooth = convolve(catalogue_frame, kernel)
+    imax_cat, jmax_cat = get_max(cat_smooth, np.std(cat_smooth))
+    imax_cat = np.asarray(imax_cat)
+    jmax_cat = np.asarray(jmax_cat)
+
+    # Smooth images and find local maxima coordinates for each
+    for k in range(0, n):
+        img_smooth[:, :, k] = convolve(img_frames[:, :, k], kernel)
+        i_temp, j_temp = get_max(img_smooth[:, :, k], np.std(img_smooth[:, :, k]))
+        i_temp = np.asarray(i_temp)
+        j_temp = np.asarray(j_temp)
+
+        imax_smooth[k] = i_temp
+        jmax_smooth[k] = j_temp
+
+    # Show and select 4 stars in catalogue/reference image to compare images with
+    refs_plot = image_plot(cat_smooth, plot_add=[imax_cat, jmax_cat], ginput=True)
+    number_of_refs = len(refs_plot)
+    i_ref = np.empty((number_of_refs, ))
+    j_ref = np.empty((number_of_refs, ))
+    for l in range(0, number_of_refs):
+        current_ref = refs_plot[l]
+        i_ref[l] = imax_cat[int(np.argmin(np.abs(imax_cat-current_ref[0])))]
+        j_ref[l] = jmax_cat[int(np.argmin(np.abs(jmax_cat-current_ref[1])))]
+
+    # Create match matrices for both coordinates, containing value difference
+    # between all reference peaks and image peaks
+    imaxlen = np.max([len(x) for x in imax_smooth])
+    jmaxlen = np.max([len(x) for x in jmax_smooth])
+    ijmaxlen = np.max([imaxlen, jmaxlen])
+
+    matchmat_i = np.empty((number_of_refs, ijmaxlen, n))
+    matchmat_j = np.empty((number_of_refs, ijmaxlen, n))
+    matchmat_i[:] = np.nan
+    matchmat_j[:] = np.nan
+    for k in range(0, n):
+        i_reftemp = i_ref.reshape((number_of_refs, 1))
+        i_temp = imax_smooth[k].reshape((1, len(imax_smooth[k])))
+        j_reftemp = j_ref.reshape((number_of_refs, 1))
+        j_temp = jmax_smooth[k].reshape((1, len(jmax_smooth[k])))
+
+        matchmat_i[:, 0:len(i_temp), k] = np.abs(i_reftemp - i_temp)
+        matchmat_j[:, 0:len(j_temp), k] = np.abs(j_reftemp - j_temp)
+
+    # Find best 4 matches for each image (lowest sum of i and j differences)
+    bestmatch_i = np.empty(number_of_refs, n)
+    bestmatch_j = np.empty(number_of_refs, n)
+    matchmat = matchmat_i + matchmat_j
+    matchmat[np.isnan(matchmat)] = 99999999.0  # Change nan values to very large numbers to avoid nan propagation
+    for k in range(0, n):
+        for l in range(0, number_of_refs):
+            best_match_indx = np.argmin(matchmat[l, :, k])
+            bestmatch_i[l, k] = imax_smooth[k][best_match_indx]
+            bestmatch_j[l, k] = jmax_smooth[k][best_match_indx]
+            print('match diff', matchmat[l, best_match_indx, k])
+
+    return [[bestmatch_i, bestmatch_j], [i_ref, j_ref]]
+
+
+def oro_pipeline():
+    import easygui as eg
+    fileselect = eg.fileopenbox(title='Select images, darks and flats', multiple=True)
+    imgs = {'img_filter': [], 'time_utc': [], 'ra': [], 'dec': [], 'exp_time': []}
+    darks = {'time_utc': [], 'exp_time': []}
+    flats = {'img_filter': [], 'time_utc': [], 'exp_time': []}
+    bias = None
+    for file in fileselect:
+        file_data = get_oroimage(file, show_info=False)
+        if file_data['img_type'] == 'Light Frame':
+            if 'img_data' in imgs.keys():
+                imgs['img_data'] = np.append(imgs['img_data'], file_data['img_data'][:, :, np.newaxis], axis=2)
+                print('img', imgs['img_data'].shape)
+            else:
+                imgs['img_data'] = file_data['img_data']
+                imgs['img_data'] = imgs['img_data'].reshape((len(imgs['img_data'][:, 0]),
+                                                             len(imgs['img_data'][0, :]), 1))
+            imgs['img_filter'].append(file_data['img_filter'])
+            imgs['time_utc'].append(file_data['time_utc'])
+            imgs['ra'].append(file_data['ra'])
+            imgs['dec'].append(file_data['dec'])
+            imgs['exp_time'].append(file_data['exp_time'])
+        elif file_data['img_type'] == 'Dark Frame':
+            if 'img_data' in darks.keys():
+                darks['img_data'] = np.append(darks['img_data'], file_data['img_data'][:, :, np.newaxis], axis=2)
+                print('dark', darks['img_data'].shape)
+            else:
+                darks['img_data'] = file_data['img_data']
+                darks['img_data'] = darks['img_data'].reshape((len(darks['img_data'][:, 0]),
+                                                               len(darks['img_data'][0, :]), 1))
+            darks['time_utc'].append(file_data['time_utc'])
+            darks['exp_time'].append(file_data['exp_time'])
+        elif file_data['img_type'] == 'Flat Field':
+            if 'img_data' in flats.keys():
+                flats['img_data'] = np.append(flats['img_data'], file_data['img_data'][:, :, np.newaxis], axis=2)
+                print('flat', flats['img_data'].shape)
+            else:
+                flats['img_data'] = file_data['img_data']
+                flats['img_data'] = flats['img_data'].reshape((len(flats['img_data'][:, 0]),
+                                                               len(flats['img_data'][0, :]), 1))
+            flats['img_filter'].append(file_data['img_filter'])
+            flats['time_utc'].append(file_data['time_utc'])
+            flats['exp_time'].append(file_data['exp_time'])
+        else:
+            print(file_data['img_type'])
+            print('Unknown filetype')
+
+    imgs_filtered = filter_pipe(imgs, darks, flats, bias, filters=('Bessell V', 'Bessell B', 'Bessell R'))
+
+    # Get reference frame for coordinate matchmaking
+    fileselect = eg.fileopenbox(title='Select catalogue/reference image')
+    file_data = get_oroimage(fileselect)
+    ref_img = {}
+    ref_img['img_data'] = file_data['img_data'].reshape((len(file_data['img_data'][:, 0]),
+                                                         len(file_data['img_data'][0, :]), 1))
+    ref_img['img_filter'] = file_data['img_filter']
+    ref_img['ra'] = file_data['ra']
+    ref_img['dec'] = file_data['dec']
+    ref_filtered = filter_pipe(ref_img, darks, flats, filters=(ref_img['img_filter']), bias=None)
+    print('reffilt type', type(ref_filtered))
+    print(ref_filtered)
+
+    imgs_V = imgs_filtered['Bessell V']
+    imgs_B = imgs_filtered['Bessell B']
+    imgs_R = imgs_filtered['Bessell R']
+
+    imgs_BVR = np.copy(imgs_B)
+    imgs_BVR = np.append(imgs_BVR, imgs_V, axis=2)
+    imgs_BVR = np.append(imgs_BVR, imgs_R, axis=2)
+    [[best_match_x, best_match_y], [ref_x, ref_y]] = matchmaker(imgs_BVR, ref_filtered)
+
+
+def image_plot(image_data, plot_add=None, ginput=False, show_info=False, block=True):
     if show_info is True:
         print('Min:', np.min(image_data))
         print('Max:', np.max(image_data))
         print('Mean:', np.mean(image_data))
         print('Stdev:', np.std(image_data))
-    plt.figure()
-    plt.imshow(image_data, cmap='gray_r', norm=LogNorm())
+    fig, ax = plt.subplots(1, 1)
+
+    ax.imshow(image_data, cmap='gray_r', norm=LogNorm())
+    if plot_add is not None:
+        ax.plot(plot_add[0], plot_add[1], 'ro', markersize=10, alpha=0.5)
 
     if ginput is True:
         st, r1, r2, bckg = plt.ginput(n=4, timeout=0, show_clicks=True)
