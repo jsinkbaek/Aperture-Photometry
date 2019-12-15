@@ -6,16 +6,19 @@ from detect_peaks import detect_peaks
 import scipy.ndimage as ndimage
 import easygui as eg
 from matplotlib import gridspec
+import time as tm
 
 
-def get_max(img, sigma, alpha=20, size=10):
+def get_max(img, sigma, alpha=20, size=10, limit=50):
     i_out = []
     j_out = []
     image_temp = np.copy(img)
     while True:
         k = np.argmax(image_temp)
         j, i = np.unravel_index(k, image_temp.shape)
-        if image_temp[j, i] >= alpha*sigma:
+        if len(i_out) > limit:
+            break
+        elif image_temp[j, i] >= alpha*sigma:
             i_out.append(i)
             j_out.append(j)
             x = np.arange(i-size, i+size)
@@ -227,15 +230,15 @@ def matchmaker(img_frames, catalogue_frame, stddev=1):
     from astropy.convolution import Gaussian2DKernel
     from astropy.convolution import convolve
     # Number of image frames
-    n = len(img_frames[0, 0, :])
+    n_imgs = len(img_frames[0, 0, :])
 
     # Create kernel for smoothing
     kernel = Gaussian2DKernel(x_stddev=stddev)
 
     # Initialize arrays for smoothed images and local maxima coordinates (j, i) = (y, x)
     img_smooth = np.empty(img_frames.shape)
-    imax_smooth = [np.empty(1) for k in range(0, n)]
-    jmax_smooth = [np.empty(1) for k in range(0, n)]
+    imax_smooth = [np.empty(1) for k in range(0, n_imgs)]
+    jmax_smooth = [np.empty(1) for k in range(0, n_imgs)]
 
     # Smooth catalogue/reference image and find local maxima
     cat_smooth = convolve(catalogue_frame[:, :, 0], kernel)
@@ -244,7 +247,7 @@ def matchmaker(img_frames, catalogue_frame, stddev=1):
     jmax_cat = np.asarray(jmax_cat)
 
     # Smooth images and find local maxima coordinates for each
-    for k in range(0, n):
+    for k in range(0, n_imgs):
         img_smooth[:, :, k] = convolve(img_frames[:, :, k], kernel)
         i_temp, j_temp = get_max(img_smooth[:, :, k], np.std(img_smooth[:, :, k]), alpha=40)
         i_temp = np.asarray(i_temp)
@@ -266,6 +269,7 @@ def matchmaker(img_frames, catalogue_frame, stddev=1):
     # Create geometric shape from reference points
     from itertools import combinations
     number_of_corners = 4
+    number_of_diagonals = 2
     corners = list(range(0, number_of_corners))                     # quadrangle
     shape_combs = [x for x in combinations(corners, 2)]             # possible corner combinations for iteration
     number_of_sides = len(shape_combs)
@@ -274,102 +278,79 @@ def matchmaker(img_frames, catalogue_frame, stddev=1):
         curr_i_len = np.abs(i_ref[m] - i_ref[n])
         curr_j_len = np.abs(j_ref[m] - j_ref[n])
         shape_ref[k] = np.sqrt(curr_i_len**2 + curr_j_len**2)       # trigonometric length
-    shape_ref = shape_ref / np.max(shape_ref)                       # make sidelengths proportional to max sidelength
+    shape_ref_nondiag = np.copy(shape_ref)
+    for k in range(0, number_of_diagonals):
+        shape_ref = np.delete(shape_ref_nondiag, np.argmax(shape_ref_nondiag))
+    print('shape_ref_nondiag shape', shape_ref_nondiag.shape)
+    # shape_ref = shape_ref / np.max(shape_ref)                       # make sidelengths proportional to max sidelength
     shape_ref_argsort = np.argsort(shape_ref)
     shape_ref_sort = shape_ref[shape_ref_argsort]
+    shape_ref_nd_as = np.argsort(shape_ref_nondiag)
+    shape_ref_nd_s = shape_ref_nondiag[shape_ref_nd_as]
 
     # # Create stellar geometric shapes for each image frame and possible combination
-    for k in range(0, n):
+    bestmatch_i = []
+    bestmatch_j = []
+    print('start loop')
+    for k in range(0, n_imgs):
+        t1 = tm.time()
         # Create stellar combinations
-        stellar_indx = list(range(0, len(imax_smooth[k])))          # A list of indices for every star
-        stellar_combs = [x for x in combinations(stellar_indx, 4)]  # All possible combinations of 4 stars
-        for l in range(0, len(stellar_combs)):
+        stellar_indx = list(range(0, len(imax_smooth[k])))               # A list of indices for every star
+        stellar_combs = [x for x in combinations(stellar_indx, number_of_corners)]  # Possible combinations of 4 stars
+        stellar_combs_0 = np.copy(stellar_combs)
+        print('scombs0 shape', stellar_combs_0.shape)
+        n_scombs = len(stellar_combs)
+        for l in range(0, n_scombs):
             current_comb = np.array(stellar_combs[l])                    # change to array for multi indexing
             current_comb = [current_comb[list(x)] for x in shape_combs]  # reform to combs of 2 (6 total)
             stellar_combs[l] = np.asarray(current_comb)                  # (0,1,2,3) to [[0,1],[0,2],[0,3],[1,2],..]
         stellar_combs = np.asarray(stellar_combs)
-        print('shape stellar_combs', stellar_combs.shape)
 
         # Calculate geometry of each combination
         imax_temp = imax_smooth[k]                                  # load current image found stars
         jmax_temp = jmax_smooth[k]
-        n_scombs = len(stellar_combs[0, 0, :])
-        shape_img = np.empty((number_of_sides, n_scombs))
-        i_bmsearch = np.empty(stellar_combs.shape)                  # arrays to recover pixel pos of found best match
-        j_bmsearch = np.empty(stellar_combs.shape)
+
+        shape_img = np.empty((n_scombs, number_of_sides))
+        i_bmsearch = np.empty(stellar_combs_0.shape)                  # arrays to recover pixel pos of found best match
+        j_bmsearch = np.empty(stellar_combs_0.shape)
         for l in range(0, n_scombs):
-            current_comb = stellar_combs[:, :, l]
+            current_comb = stellar_combs[l, :, :]
+            current_comb_0 = stellar_combs_0[l, :]
             curr_i = imax_temp[current_comb]                        # create arrs with pos same shape as comb arr
             curr_j = jmax_temp[current_comb]
-            i_bmsearch[:, :, l] = curr_i
-            j_bmsearch[:, :, l] = curr_j
-            print('curr_i shape', curr_i.shape)
-            curr_i_len = np.abs(curr_i[0, :]-curr_i[1, :])          # calculate pixel length between stars
-            curr_j_len = np.abs(curr_j[0, :]-curr_j[1, :])
-            shape_img[:, l] = np.sqrt(curr_i_len**2+curr_j_len**2)  # trigonometric length
-            shape_img[:, l] = shape_img[:, l]/np.max(shape_img[:, l])  # ratio with max length
+            i_bmsearch[l, :] = imax_temp[current_comb_0]
+            j_bmsearch[l, :] = jmax_temp[current_comb_0]
+            curr_i_len = np.abs(curr_i[:, 0]-curr_i[:, 1])          # calculate pixel length between stars
+            curr_j_len = np.abs(curr_j[:, 0]-curr_j[:, 0])
+            shape_img[l, :] = np.sqrt(curr_i_len**2+curr_j_len**2)  # trigonometric length):
+            # shape_img[l, :] = shape_img[l, :]/np.max(shape_img[l, :])  # ratio with max length
 
         # Compare stellar geometric shapes with ref for every combination
-        shape_img_argsort = np.argsort(shape_img, axis=0)           # Sort each combination from low to high in sidelen
-        shape_img_sort = np.take_along_axis(shape_img, shape_img_argsort, axis=0)
+        shape_img_nondiag = np.empty((n_scombs, number_of_sides-number_of_diagonals))
+        for l in range(0, n_scombs):
+            shape_temp = np.copy(shape_img[l, :])
+            for g in range(0, number_of_diagonals):
+                shape_temp = np.delete(shape_temp, np.argmax(shape_temp))
+            shape_img_nondiag[l, :] = shape_temp
 
-        shape_diff = np.abs(shape_img_sort - shape_ref_sort[:, np.newaxis])
-        shape_diff_tot = np.sum(shape_diff, axis=0)                 # Total match difference. The lower the better
-        best_comb_match = np.argmin(shape_diff_tot)             # Minimum variation from reference
+        shape_img_argsort = np.argsort(shape_img, axis=1)           # Sort each combination from low to high in sidelen
+        shape_img_sort = np.take_along_axis(shape_img, shape_img_argsort, axis=1)
 
-        shape_bm = shape_img[:, best_comb_match]
-        print('best shape match', shape_bm)
-        print('reference shape', shape_ref)
-        i_bm = i_bmsearch[:, :, best_comb_match]
-        j_bm = j_bmsearch[:, :, best_comb_match]
-        bm_argsort = shape_img_argsort[:, best_comb_match]
+        shape_diff = np.abs(shape_img_sort - shape_ref_sort[np.newaxis, :])
+        shape_diff_tot = np.sum(shape_diff, axis=1)                 # Total match difference. The lower the better
+        best_comb_match = np.argmin(shape_diff_tot)                 # Minimum variation from reference
 
+        shape_bm = shape_img_sort[best_comb_match, :]
+        print('best shape match sorted', shape_bm)
+        print('reference shape sorted', shape_ref_sort)
+        i_bm = i_bmsearch[best_comb_match, :]
+        j_bm = j_bmsearch[best_comb_match, :]
+        bestmatch_i.append(i_bm)
+        bestmatch_j.append(j_bm)
+        bm_argsort = shape_img_argsort[best_comb_match, :]
+        t2 = tm.time()
+        print('loop time', t2-t1)
 
-
-    # # Compare geometric shapes of image combinations with reference shape
-
-
-
-    # Create match matrices for both coordinates, containing value difference
-    # between all reference peaks and image peaks
-
-
-
-
-    # TODO: Change matchmaker to match by geometry instead of location (currently, matchmaker will only pick the right
-    #  stars if they are close in pixels to the reference stars)
-    imaxlen = np.max([len(x) for x in imax_smooth])
-    jmaxlen = np.max([len(x) for x in jmax_smooth])
-    ijmaxlen = np.max([imaxlen, jmaxlen])
-
-    matchmat_i = np.empty((number_of_refs, ijmaxlen, n))
-    matchmat_j = np.empty((number_of_refs, ijmaxlen, n))
-    matchmat_i[:] = np.nan
-    matchmat_j[:] = np.nan
-
-
-    for k in range(0, n):
-        i_reftemp = i_ref.reshape((number_of_refs, 1))
-        i_temp = imax_smooth[k].reshape((1, len(imax_smooth[k])))
-        j_reftemp = j_ref.reshape((number_of_refs, 1))
-        j_temp = jmax_smooth[k].reshape((1, len(jmax_smooth[k])))
-
-        print('ireftemp shape', i_reftemp.shape)
-        print('itemp shape', i_temp.shape)
-        matchmat_i[:, 0:len(i_temp[0, :]), k] = np.abs(i_reftemp - i_temp)
-        matchmat_j[:, 0:len(j_temp[0, :]), k] = np.abs(j_reftemp - j_temp)
-
-    # Find best 4 matches for each image (lowest sum of i and j differences)
-    bestmatch_i = np.empty((number_of_refs, n))
-    bestmatch_j = np.empty((number_of_refs, n))
-    matchmat = matchmat_i + matchmat_j
-    matchmat[np.isnan(matchmat)] = 99999999.0  # Change nan values to very large numbers to avoid nan propagation
-    for k in range(0, n):
-        for l in range(0, number_of_refs):
-            best_match_indx = np.argmin(matchmat[l, :, k])
-            bestmatch_i[l, k] = imax_smooth[k][best_match_indx]
-            bestmatch_j[l, k] = jmax_smooth[k][best_match_indx]
-            print('match diff', matchmat[l, best_match_indx, k])
     print('frames shape', img_frames.shape)
     imgs_plot = np.append(img_smooth, cat_smooth[:, :, np.newaxis], axis=2)
     print('imgs plot shape', imgs_plot.shape)
@@ -377,9 +358,9 @@ def matchmaker(img_frames, catalogue_frame, stddev=1):
     ncols = 4
     nrows = int(np.ceil(len(imgs_plot[0, 0, :])/ncols))
     ax = multiplot(imgs_plot, ncols=ncols, nrows=nrows)
-    for k in range(0, len(img_frames[0, 0, :])):
+    for k in range(0, n_imgs):
         (crow, ccol) = np.unravel_index(k, (nrows, ncols))
-        ax[crow][ccol].plot(bestmatch_i[:, k], bestmatch_j[:, k], 'ro', markersize=5, alpha=0.25)
+        ax[crow][ccol].plot(bestmatch_i[k][:], bestmatch_j[k][:], 'ro', markersize=5, alpha=0.25)
         del crow, ccol
     (ref_row, ref_col) = np.unravel_index(len(imgs_plot[0, 0, :])-1, (nrows, ncols))
     ax[ref_row][ref_col].plot(i_ref, j_ref, 'bo', markersize=5, alpha=0.25)
