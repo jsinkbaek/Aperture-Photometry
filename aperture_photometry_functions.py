@@ -7,6 +7,9 @@ import scipy.ndimage as ndimage
 import easygui as eg
 from matplotlib import gridspec
 import time as tm
+from sympy import Point, Polygon, pi, centroid
+import math
+import operator
 
 
 def get_max(img, sigma, alpha=20, size=10, limit=50):
@@ -30,6 +33,11 @@ def get_max(img, sigma, alpha=20, size=10, limit=50):
         else:
             break
     return i_out, j_out
+
+
+def point_ccwsorter(*args):
+    cent = centroid(*args)
+    return sorted(args, key=lambda coord: (-135-np.rad2deg(math.atan2(*tuple(map(operator.sub, coord, cent)))) % 360))
 
 
 def get_fitsimage(image_file, show_info=False):
@@ -242,14 +250,14 @@ def matchmaker(img_frames, catalogue_frame, stddev=1):
 
     # Smooth catalogue/reference image and find local maxima
     cat_smooth = convolve(catalogue_frame[:, :, 0], kernel)
-    imax_cat, jmax_cat = get_max(cat_smooth, np.std(cat_smooth), alpha=100)
+    imax_cat, jmax_cat = get_max(cat_smooth, np.std(cat_smooth), alpha=100, limit=50)
     imax_cat = np.asarray(imax_cat)
     jmax_cat = np.asarray(jmax_cat)
 
     # Smooth images and find local maxima coordinates for each
     for k in range(0, n_imgs):
         img_smooth[:, :, k] = convolve(img_frames[:, :, k], kernel)
-        i_temp, j_temp = get_max(img_smooth[:, :, k], np.std(img_smooth[:, :, k]), alpha=40)
+        i_temp, j_temp = get_max(img_smooth[:, :, k], np.std(img_smooth[:, :, k]), alpha=40, limit=50)
         i_temp = np.asarray(i_temp)
         j_temp = np.asarray(j_temp)
 
@@ -268,88 +276,85 @@ def matchmaker(img_frames, catalogue_frame, stddev=1):
 
     # Create geometric shape from reference points
     from itertools import combinations
-    number_of_corners = 4
-    number_of_diagonals = 2
-    corners = list(range(0, number_of_corners))                     # quadrangle
-    shape_combs = [x for x in combinations(corners, 2)]             # possible corner combinations for iteration
-    number_of_sides = len(shape_combs)
-    shape_ref = np.empty((number_of_sides, ))                       # preload array for storing side length
-    for (m, n), k in zip(shape_combs, range(0, number_of_sides)):   # (m, n) elements in combs_ref, k is loop iteration
-        curr_i_len = np.abs(i_ref[m] - i_ref[n])
-        curr_j_len = np.abs(j_ref[m] - j_ref[n])
-        shape_ref[k] = np.sqrt(curr_i_len**2 + curr_j_len**2)       # trigonometric length
-    shape_ref_nondiag = np.copy(shape_ref)
-    for k in range(0, number_of_diagonals):
-        shape_ref = np.delete(shape_ref_nondiag, np.argmax(shape_ref_nondiag))
-    print('shape_ref_nondiag shape', shape_ref_nondiag.shape)
-    # shape_ref = shape_ref / np.max(shape_ref)                       # make sidelengths proportional to max sidelength
-    shape_ref_argsort = np.argsort(shape_ref)
-    shape_ref_sort = shape_ref[shape_ref_argsort]
-    shape_ref_nd_as = np.argsort(shape_ref_nondiag)
-    shape_ref_nd_s = shape_ref_nondiag[shape_ref_nd_as]
 
-    # # Create stellar geometric shapes for each image frame and possible combination
+    number_of_corners = len(i_ref)                         # quadrangle if 4
+
+    ref_points = list(map(Point, i_ref, j_ref))            # save coordinates as points, same as a list comprehension
+    ref_points = point_ccwsorter(*ref_points)              # sort counter-clockwise
+    ref_poly = Polygon(*ref_points)                        # create polygon object from points (corners)
     bestmatch_i = []
     bestmatch_j = []
-    print('start loop')
     for k in range(0, n_imgs):
         t1 = tm.time()
-        # Create stellar combinations
-        stellar_indx = list(range(0, len(imax_smooth[k])))               # A list of indices for every star
-        stellar_combs = [x for x in combinations(stellar_indx, number_of_corners)]  # Possible combinations of 4 stars
-        stellar_combs_0 = np.copy(stellar_combs)
-        print('scombs0 shape', stellar_combs_0.shape)
-        n_scombs = len(stellar_combs)
-        for l in range(0, n_scombs):
-            current_comb = np.array(stellar_combs[l])                    # change to array for multi indexing
-            current_comb = [current_comb[list(x)] for x in shape_combs]  # reform to combs of 2 (6 total)
-            stellar_combs[l] = np.asarray(current_comb)                  # (0,1,2,3) to [[0,1],[0,2],[0,3],[1,2],..]
-        stellar_combs = np.asarray(stellar_combs)
-
-        # Calculate geometry of each combination
-        imax_temp = imax_smooth[k]                                  # load current image found stars
+        point_indx = list(range(0, len(imax_smooth[k])))                  # a list of indices for every star
+        combs = [x for x in combinations(point_indx, number_of_corners)]  # possible combinations of 4 stars
+        n_combs = len(combs)
+        print('n_combs', n_combs)
+        imax_temp = imax_smooth[k]                         # get current peaks
         jmax_temp = jmax_smooth[k]
 
-        shape_img = np.empty((n_scombs, number_of_sides))
-        i_bmsearch = np.empty(stellar_combs_0.shape)                  # arrays to recover pixel pos of found best match
-        j_bmsearch = np.empty(stellar_combs_0.shape)
-        for l in range(0, n_scombs):
-            current_comb = stellar_combs[l, :, :]
-            current_comb_0 = stellar_combs_0[l, :]
-            curr_i = imax_temp[current_comb]                        # create arrs with pos same shape as comb arr
-            curr_j = jmax_temp[current_comb]
-            i_bmsearch[l, :] = imax_temp[current_comb_0]
-            j_bmsearch[l, :] = jmax_temp[current_comb_0]
-            curr_i_len = np.abs(curr_i[:, 0]-curr_i[:, 1])          # calculate pixel length between stars
-            curr_j_len = np.abs(curr_j[:, 0]-curr_j[:, 0])
-            shape_img[l, :] = np.sqrt(curr_i_len**2+curr_j_len**2)  # trigonometric length):
-            # shape_img[l, :] = shape_img[l, :]/np.max(shape_img[l, :])  # ratio with max length
+        dt = np.dtype(Polygon)
+        img_poly = np.empty((n_combs, ), dtype=dt)         # initialize array to hold Polygons, angles, sidelength,
+        poly_angles = np.empty((number_of_corners, n_combs))    # and perimeter/area
+        poly_slen = np.empty((number_of_corners, n_combs))
+        t3 = tm.time()
+        loopstart = np.empty((n_combs, ))
+        loop1 = np.empty((n_combs, ))
+        loop2 = np.empty((n_combs, ))
+        loopend = np.empty((n_combs, ))
+        for l in range(0, n_combs):                        # loop over all possible combinations to create polygons
+            loopstart[l] = tm.time()
+            curr_comb = np.array(combs[l])
+            curr_i = imax_temp[curr_comb]
+            curr_j = jmax_temp[curr_comb]
 
-        # Compare stellar geometric shapes with ref for every combination
-        shape_img_nondiag = np.empty((n_scombs, number_of_sides-number_of_diagonals))
-        for l in range(0, n_scombs):
-            shape_temp = np.copy(shape_img[l, :])
-            for g in range(0, number_of_diagonals):
-                shape_temp = np.delete(shape_temp, np.argmax(shape_temp))
-            shape_img_nondiag[l, :] = shape_temp
+            loop1[l] = tm.time()
+            curr_points = [Point(i, j) for i, j in zip(curr_i, curr_j)]   # save coordinates as points, same as a map
+            curr_points = point_ccwsorter(*curr_points)                   # sort in counter-clockwise order
+            curr_poly = Polygon(*curr_points)
 
-        shape_img_argsort = np.argsort(shape_img, axis=1)           # Sort each combination from low to high in sidelen
-        shape_img_sort = np.take_along_axis(shape_img, shape_img_argsort, axis=1)
+            loop2[l] = tm.time()
+            poly_angles[:, l] = np.array(list(curr_poly.angles.values()))       # convert dictionaries to sorted list
+            poly_slen[:, l] = np.array([x.length for x in curr_poly.sides])
+            img_poly[l] = curr_poly
+            loopend[l] = tm.time()
+        poly_angles = np.sort(poly_angles, axis=0)
+        poly_slen = np.sort(poly_slen, axis=0)
+        print('loop mean', np.mean(loopend-loopstart))
+        print('loop1-start', np.mean(loop1-loopstart))
+        print('loop2-loop1', np.mean(loop2-loop1))
+        print('end-loop2', np.mean(loopend-loop2))
+        t4 = tm.time()
+        print('t4-t3', t4-t3)
 
-        shape_diff = np.abs(shape_img_sort - shape_ref_sort[np.newaxis, :])
-        shape_diff_tot = np.sum(shape_diff, axis=1)                 # Total match difference. The lower the better
-        best_comb_match = np.argmin(shape_diff_tot)                 # Minimum variation from reference
+        ref_slen = np.array([x.length for x in ref_poly.sides]).reshape(number_of_corners, 1)
+        ref_angles = np.array(list(ref_poly.angles.values())).reshape(number_of_corners, 1)
+        slen_diff = np.sum(np.abs(poly_slen - ref_slen), axis=0)
+        slen_diff /= np.max(slen_diff)                                    # normalize with respect to max value
+        angle_diff = np.sum(np.abs(poly_angles - ref_angles), axis=0)
+        angle_diff /= np.max(angle_diff)
 
-        shape_bm = shape_img_sort[best_comb_match, :]
-        print('best shape match sorted', shape_bm)
-        print('reference shape sorted', shape_ref_sort)
-        i_bm = i_bmsearch[best_comb_match, :]
-        j_bm = j_bmsearch[best_comb_match, :]
+        match_value = angle_diff + slen_diff
+        best_idx = np.argmin(match_value)               # best match polygon index for the current image
+
+        best_poly = img_poly[best_idx]
+        # print('ref pa_ratio', np.abs(ref_poly.perimeter/ref_poly.area))
+        # print('best_poly pa_ratio', np.abs(best_poly.perimeter/best_poly.area))
+
+        best_points = best_poly.vertices
+        i_bm = []
+        j_bm = []
+        for l in range(0, len(best_points)):
+            curr_point = best_points[l]
+            i_bm.append(curr_point[0])
+            j_bm.append(curr_point[1])
         bestmatch_i.append(i_bm)
         bestmatch_j.append(j_bm)
-        bm_argsort = shape_img_argsort[best_comb_match, :]
-        t2 = tm.time()
-        print('loop time', t2-t1)
+
+        t = tm.time()
+        print('loop time', t-t1)
+        print('')
+        print('')
 
     print('frames shape', img_frames.shape)
     imgs_plot = np.append(img_smooth, cat_smooth[:, :, np.newaxis], axis=2)
