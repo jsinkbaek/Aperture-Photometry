@@ -3,13 +3,12 @@ import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.colors import LogNorm
 from detect_peaks import detect_peaks
-import scipy.ndimage as ndimage
 import easygui as eg
-from matplotlib import gridspec
 import time as tm
 from sympy import Point, Polygon, pi, centroid
 import math
 import operator
+from itertools import combinations
 
 
 def get_max(img, sigma, alpha=20, size=10, limit=50):
@@ -232,6 +231,72 @@ def filter_pipe(imgs, darks, flats, bias=None, filters=('Bessell V', 'Bessell B'
 
         img_filtered[f] = current_imgs
     return img_filtered
+
+
+def geometric_hasher(img_peaks_x, img_peaks_y):
+    points = 4
+    idx = list(range(0, len(img_peaks_x)))
+    point_idx = list(range(0, points))
+    line_comb = []
+    for line in combinations(point_idx, 2):
+        line_comb.append(line)
+    line_comb = np.asarray(line_comb)
+    point_idx = np.asarray(point_idx)
+
+    dt_list = np.dtype([])
+    combsize = math.factorial(len(idx))/(math.factorial(points) * math.factorial(len(idx)-points))
+    hashes = np.empty((combsize, 4))
+    k = 0
+    for comb in combinations(idx, points):
+        x = img_peaks_x[comb]
+        y = img_peaks_y[comb]
+        x_diff, y_diff = x[line_comb[:, 0]]-x[line_comb[:, 1]], y[line_comb[:, 0]]-y[line_comb[:, 1]]
+        line_len = (x_diff**2 + y_diff**2)**0.5
+        ab_idx = int(np.argmax(line_len))
+        ab_len = line_len[ab_idx]
+        a_and_b_idx = line_comb[ab_idx]
+
+        checklist = np.empty((points, 2))
+        checklen = np.empty((points, ))
+        for i in range(0, len(line_comb[:, 0])):
+            curr_lcomb = line_comb[i, :]
+            if curr_lcomb[0] != a_and_b_idx[0] or a_and_b_idx[1]:
+                if curr_lcomb[1] == a_and_b_idx[0] or a_and_b_idx[1]:
+                    checklist[i, :] = curr_lcomb[:]
+                    checklen[i] = line_len[i]
+            elif curr_lcomb[1] != a_and_b_idx[0] or a_and_b_idx[1]:
+                checklist[i, :] = curr_lcomb[:]
+                checklen[i] = line_len[i]
+            else:
+                pass
+        ac_idx = int(np.argmin(checklen))
+        a_and_c_idx = checklist[ac_idx, :]
+        a_idx = np.intersect1d(a_and_b_idx, a_and_c_idx)[0]
+        b_idx = a_and_b_idx[~a_idx]
+        c_idx = a_and_c_idx[~a_idx]
+        d_idx = point_idx[~a_idx or b_idx or c_idx]
+
+        center_x = ab_len*0.5/np.sqrt(2)                    # right triangle with equal sides c²=sqrt(2*a²)
+        center_y = center_x
+
+        x_ab, y_ab = x[b_idx] - x[a_idx], y[b_idx] - y[a_idx]
+        x_unit, y_unit = np.array([x_ab, y_ab]) / ab_len
+
+        x_ac, y_ac = (x[c_idx]-x[a_idx])*x_unit, (y[c_idx]-y[a_idx])*y_unit
+        x_ad, y_ad = (x[d_idx]-x[a_idx])*x_unit, (y[d_idx]-y[a_idx])*y_unit
+
+        if ab_len*0.5 > ((x_ac-center_x)**2+(y_ac-center_y)**2)**0.5 and ((x_ad-center_x)**2+(y_ad-center_y)**2)**0.5:
+            hashes[k, :] = np.array([x_ac, y_ac, x_ad, y_ad])
+            k += 1
+
+
+
+
+
+
+
+
+
 
 
 def matchmaker(img_frames, catalogue_frame, stddev=1):
