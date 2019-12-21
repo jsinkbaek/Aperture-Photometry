@@ -243,9 +243,9 @@ def geometric_hasher(img_peaks_x, img_peaks_y):
     line_comb = np.asarray(line_comb)
     point_idx = np.asarray(point_idx)
 
-    dt_list = np.dtype([])
     combsize = math.factorial(len(idx))/(math.factorial(points) * math.factorial(len(idx)-points))
     hashes = np.empty((combsize, 4))
+    loc = np.empty((combsize, 2))
     k = 0
     for comb in combinations(idx, points):
         x = img_peaks_x[comb]
@@ -287,14 +287,30 @@ def geometric_hasher(img_peaks_x, img_peaks_y):
 
         if ab_len*0.5 > ((x_ac-center_x)**2+(y_ac-center_y)**2)**0.5 and ((x_ad-center_x)**2+(y_ad-center_y)**2)**0.5:
             hashes[k, :] = np.array([x_ac, y_ac, x_ad, y_ad])
+            center = (np.mean(x), np.mean(y))
+            loc[k, :] = center
             k += 1
 
+    hashes = hashes[~np.isnan(hashes)]
+    loc = loc[~np.isnan(loc)]
+    hashes = np.reshape(hashes, (k, 4))
+    loc = np.reshape(loc, (k, 4))
+    return hashes, loc
 
 
+def hash_compare(hlist1, hlist2, acceptance_limit=0.1):
+    # hash_list2 kan be an array with hashes for multiple images that need to be compared with hash_list1
+    if hlist1.shape == hlist2.shape:
+        hlist1 = hlist1[np.newaxis, :, :]
+        hlist2 = hlist2[np.newaxis, :, :]
+    else:
+        hlist1 = hlist1[np.newaxis, :, :]
 
-
-
-
+    for i in range(0, len(hlist2[:, 0, 0])):
+        outer_subtract = np.empty((len(hlist1[0, :, 0]), len(hlist2[i, :, 0]), len(hlist2[i, 0, :])))
+        for k in range(0, len(hlist2[i, 0, :])):
+            outer_subtract[:, :, k] = np.subtract.outer(hlist1[0, :, k], hlist2[i, :, k])
+        h_delta = np.sum(np.abs(outer_subtract), axis=2)
 
 
 
@@ -329,6 +345,19 @@ def matchmaker(img_frames, catalogue_frame, stddev=1):
         imax_smooth[k] = i_temp
         jmax_smooth[k] = j_temp
 
+    # Create geometric feature hashes for catalogue/reference image
+    hash_ref, hash_ref_loc = geometric_hasher(imax_cat, jmax_cat)
+
+    # Create geometric feature hashes for images
+    hash_imgs = np.empty((n_imgs, len(hash_ref[:, 0]), len(hash_ref[0, :])))
+    hash_imgs_loc = np.empty((n_imgs, len(hash_ref_loc[:, 0]), len(hash_ref_loc[0, :])))
+    for k in range(0, n_imgs):
+        imax_temp = imax_smooth[k]
+        jmax_temp = jmax_smooth[k]
+        hash_temp, loc_temp = geometric_hasher(imax_temp, jmax_temp)
+        hash_imgs[k, :, :] = hash_temp
+        hash_imgs_loc[k, :, :] = loc_temp
+
     # Show and select 4 stars in catalogue/reference image to compare images with
     refs_plot = image_plot(cat_smooth, plot_add=[imax_cat, jmax_cat], ginput=True)
     number_of_refs = len(refs_plot)
@@ -340,7 +369,8 @@ def matchmaker(img_frames, catalogue_frame, stddev=1):
         j_ref[l] = jmax_cat[int(np.argmin(np.abs(jmax_cat-current_ref[1])))]
 
     # Create geometric shape from reference points
-    from itertools import combinations
+
+
 
     number_of_corners = len(i_ref)                         # quadrangle if 4
 
