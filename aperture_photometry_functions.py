@@ -40,7 +40,6 @@ def point_ccwsorter(*args):
 
 
 def get_fitsimage(image_file, show_info=False):
-
     # Open fits file and show info
     hdu_list = fits.open(image_file)
     hdr = hdu_list[0].header
@@ -66,7 +65,6 @@ def get_fitsimage(image_file, show_info=False):
 
 
 def get_oroimage(fits_file, show_info=True):
-
     # Open fits file and show info
     hdu_list = fits.open(fits_file)
     hdr = hdu_list[0].header
@@ -101,6 +99,19 @@ def get_oroimage(fits_file, show_info=True):
     hdu_list.close()
 
     return result
+
+
+def save_fitsfile(img_data, fname='', filt=None, time=None, **kwargs):
+    if time is not None:
+        fname = fname + '_' + str(time)
+    if filt is not None:
+        fname = fname + '_' + str(filt)
+    hdr = fits.Header()
+    for name, value in kwargs.items():
+        hdr[name] = value
+    hdu = fits.PrimaryHDU(data=img_data, header=hdr)
+    hdul = fits.HDUList([hdu])
+    hdul.writeto(fname+'.fits')
 
 
 def oro_fileloader():
@@ -201,6 +212,8 @@ def flat_correction(img_frames, flatframes, darkframes, flat_expt, dark_expt, bi
 def filter_pipe(imgs, darks, flats, bias=None, filters=('Bessell V', 'Bessell B', 'Bessell R')):
     # Expects all the image objects to be dictionaries with at least 'img_data' and 'img_filter' keys
     img_filtered = {}
+    expt_filtered = {}
+    t_filtered = {}
     if bias is not None:
         bias_imgdat = bias['img_data']
     else:
@@ -218,6 +231,8 @@ def filter_pipe(imgs, darks, flats, bias=None, filters=('Bessell V', 'Bessell B'
 
         # Select frames
         current_imgs = imgs['img_data'][:, :, imgs_indx]
+        curr_imgs_expt = np.asarray(imgs['exp_time'])[imgs_indx]
+        curr_imgs_t = np.asarray(imgs['time_utc'])[imgs_indx]
         current_flats = flats['img_data'][:, :, flats_indx]
         flats['exp_time'] = np.asarray(flats['exp_time'])
         flat_expt = flats['exp_time'][flats_indx]
@@ -230,7 +245,9 @@ def filter_pipe(imgs, darks, flats, bias=None, filters=('Bessell V', 'Bessell B'
                                        biasframes=bias_imgdat)
 
         img_filtered[f] = current_imgs
-    return img_filtered
+        expt_filtered[f] = curr_imgs_expt
+        t_filtered[f] = curr_imgs_t
+    return img_filtered, expt_filtered, t_filtered
 
 
 def geometric_hasher(img_peaks_x, img_peaks_y):
@@ -246,6 +263,8 @@ def geometric_hasher(img_peaks_x, img_peaks_y):
     combsize = math.factorial(len(idx))/(math.factorial(points) * math.factorial(len(idx)-points))
     hashes = np.empty((combsize, 4))
     loc = np.empty((combsize, 2))
+    hashes[:] = np.nan
+    loc[:] = np.nan
     k = 0
     for comb in combinations(idx, points):
         x = img_peaks_x[comb]
@@ -298,6 +317,23 @@ def geometric_hasher(img_peaks_x, img_peaks_y):
     return hashes, loc
 
 
+def duplicates(arr):
+    uniq, cnts, indices = np.unique(arr, axis=0, return_counts=True, return_inverse=True)
+    k = 0
+    j = 0
+    dups = np.empty((uniq.size, ), dtype=np.ndarray)
+    dups[:] = np.nan
+    for i in range(uniq.size):
+        num = cnts[i]
+        if num > 1:
+            idx = indices[k:k+num]
+            dups[j] = idx
+            j += 1
+        k += num
+    dups = dups[~np.isnan(dups)]
+    return dups
+
+
 def hash_compare(hlist1, hlist2, acceptance_limit=0.1):
     # hash_list2 kan be an array with hashes for multiple images that need to be compared with hash_list1
     if hlist1.shape == hlist2.shape:
@@ -311,8 +347,24 @@ def hash_compare(hlist1, hlist2, acceptance_limit=0.1):
         for k in range(0, len(hlist2[i, 0, :])):
             outer_subtract[:, :, k] = np.subtract.outer(hlist1[0, :, k], hlist2[i, :, k])
         h_delta = np.sum(np.abs(outer_subtract), axis=2)
+        found_matches = np.where(h_delta < acceptance_limit)
 
+        dups = duplicates(found_matches[0])
+        dups_bm = np.empty((dups.size, ))
+        fm0 = found_matches[0]
+        fm1 = found_matches[1]
+        for k in range(dups.size):
+            curr_dups = dups[k]
+            curr_fm0 = fm0[curr_dups]
+            curr_fm1 = fm1[curr_dups]
+            curr_hdelta = np.array([h_delta[x, y] for x, y in zip(curr_fm0, curr_fm1)])
+            best_match = np.argmin(curr_hdelta)
+            bm_fm0 = curr_fm0[best_match]
+            bm_fm1 = curr_fm1[best_match]
+            dups_bm[k] = curr_dups[best_match]
+        for k in range(dups.size):
 
+            np.put(fm0, dups[k], [dups_bm[k]])
 
 
 def matchmaker(img_frames, catalogue_frame, stddev=1):
@@ -471,7 +523,8 @@ def matchmaker(img_frames, catalogue_frame, stddev=1):
 def oro_pipeline():
     imgs, darks, flats, bias = oro_fileloader()
 
-    imgs_filtered = filter_pipe(imgs, darks, flats, bias, filters=('Bessell V', 'Bessell B', 'Bessell R'))
+    imgs_filtered, expt_filtered, t_filtered = filter_pipe(imgs, darks, flats, bias,
+                                                           filters=('Bessell V', 'Bessell B', 'Bessell R'))
 
     # Get reference frame for coordinate matchmaking
     fileselect = eg.fileopenbox(title='Select catalogue/reference image')
@@ -482,18 +535,33 @@ def oro_pipeline():
     ref_img['img_filter'] = [file_data['img_filter']]
     ref_img['ra'] = file_data['ra']
     ref_img['dec'] = file_data['dec']
-    ref_filtered = filter_pipe(ref_img, darks, flats, filters=(ref_img['img_filter']), bias=None)
+    ref_img['exp_time'] = [file_data['exp_time']]
+    ref_img['time_utc'] = [file_data['time_utc']]
+    ref_filtered = filter_pipe(ref_img, darks, flats, filters=(ref_img['img_filter']), bias=None)[0]
     ref_filtered = ref_filtered[ref_img['img_filter'][0]]
 
     imgs_V = imgs_filtered['Bessell V']
+    expt_V = expt_filtered['Bessell V']
+    time_utc_V = t_filtered['Bessell V']
     imgs_B = imgs_filtered['Bessell B']
+    expt_B = expt_filtered['Bessell B']
+    time_utc_B = t_filtered['Bessell B']
     imgs_R = imgs_filtered['Bessell R']
+    expt_R = expt_filtered['Bessell R']
+    time_utc_R = t_filtered['Bessell R']
 
     imgs_BVR = np.copy(imgs_B)
     imgs_BVR = np.append(imgs_BVR, imgs_V, axis=2)
     imgs_BVR = np.append(imgs_BVR, imgs_R, axis=2)
-    [[best_match_x, best_match_y], [ref_x, ref_y]] = matchmaker(imgs_BVR, ref_filtered)
-    return best_match_x, best_match_y, ref_x, ref_y
+    # [[best_match_x, best_match_y], [ref_x, ref_y]] = matchmaker(imgs_BVR, ref_filtered)
+    fname='NGC6791'
+    for k in range(0, len(imgs_V[0, 0, :])):
+        save_fitsfile(img_data=imgs_V[:, :, k], fname=fname,filt='Bessell_V', time=time_utc_V[k], expt=expt_V[k])
+    for k in range(0, len(imgs_B[0, 0, :])):
+        save_fitsfile(img_data=imgs_B[:, :, k], fname=fname,filt='Bessell_B', time=time_utc_B[k], expt=expt_B[k])
+    for k in range(0, len(imgs_R[0, 0, :])):
+        save_fitsfile(img_data=imgs_R[:, :, k], fname=fname, filt='Bessell_R', time=time_utc_R[k], expt=expt_R[k])
+
 
 
 def image_plot(image_data, plot_add=None, ginput=False, show_info=False, block=True):
